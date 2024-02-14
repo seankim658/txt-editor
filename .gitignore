@@ -39,3 +39,4 @@ bin/
 *.bak
 *.orig
 *.tmp
+editor
