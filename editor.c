@@ -20,6 +20,13 @@ struct editorConfig {
     struct termios orig_termios;
 };
 
+struct abuf {
+    char *b; 
+    int len;
+};
+// simple abuf clean slate constant initializer 
+#define ABUF_INIT {NULL, 0}
+
 struct editorConfig E;
 
 /*** terminal ***/
@@ -132,7 +139,11 @@ void editorDrawRows() {
      */
     int y;
     for (y = 0; y < E.screenrows; y++) {
-        write(STDOUT_FILENO, "~\r\n", 3);
+        write(STDOUT_FILENO, "~", 1);
+
+        if (y < E.screenrows - 1) {
+            write(STDOUT_FILENO, "\r\n", 2);
+        }
     }
 }
 
