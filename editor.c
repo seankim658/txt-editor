@@ -11,10 +11,23 @@
 /*** defines ***/
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+#define TXT_VERSION "0.0.1"
+
+enum editorKey {
+  MOVE_LEFT = 1000,
+  MOVE_RIGHT = 1001,
+  MOVE_UP = 1002,
+  MOVE_DOWN = 1003,
+  PAGE_UP = 1004,
+  PAGE_DOWN = 1005
+};
+
 /*** data ***/
 
 // struct to store the editor state
 struct editorConfig {
+  int cx;
+  int cy;
   int screenrows;
   int screencols;
   struct termios orig_termios;
@@ -118,7 +131,7 @@ void enableRawMode() {
     die("tcsetattr");
 }
 
-char editorReadKey() {
+int editorReadKey() {
   /* Reads a single keypress from the user and returns it.
    *
    * Returns:
@@ -127,9 +140,51 @@ char editorReadKey() {
   int nread;
   char c;
   while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
-    if (nread == -1 && errno != EAGAIN)
+    if (nread == -1 && errno != EAGAIN) {
       die("read");
+    }
   }
+
+  if (c == '\x1b') {
+    char seq[3];
+
+    if (read(STDIN_FILENO, &seq[0], 1) != 1) {
+      return '\x1b';
+    }
+    if (read(STDIN_FILENO, &seq[1], 1) != 1) {
+      return '\x1b';
+    }
+    if (seq[0] == '[') {
+      if (seq[1] >= '0' && seq[1] <= '9') {
+        if (read(STDIN_FILENO, &seq[2], 1) != 1) {
+          return '\x1b';
+        }
+        if (seq[2] == '~') {
+          switch (seq[1]) {
+          case '5':
+            return PAGE_UP;
+          case '6':
+            return PAGE_DOWN;
+          }
+        }
+      } else {
+        switch (seq[1]) {
+        case 'A':
+          return MOVE_UP;
+        case 'B':
+          return MOVE_DOWN;
+        case 'C':
+          return MOVE_RIGHT;
+        case 'D':
+          return MOVE_LEFT;
+        }
+      }
+    }
+    return '\x1b';
+  } else {
+    return c;
+  }
+
   return c;
 }
 
@@ -155,16 +210,58 @@ int getWindowSize(int *rows, int *cols) {
 
 /*** input ***/
 
+void editorMoveCursor(int key) {
+  /* Moves the cursor.
+   *
+   * key: motion keys (using vim motion keys)
+   */
+  switch (key) {
+  case MOVE_LEFT:
+    if (E.cx != 0) {
+      E.cx--;
+    }
+    break;
+  case MOVE_RIGHT:
+    if (E.cx != E.screencols - 1) {
+      E.cx++;
+    }
+    break;
+  case MOVE_UP:
+    if (E.cy != 0) {
+      E.cy--;
+    }
+    break;
+  case MOVE_DOWN:
+    if (E.cy != E.screencols - 1) {
+      E.cy++;
+    }
+    break;
+  }
+}
+
 void editorProcessKeyPress() {
   /* Processes a keypress from the user.
    */
 
-  char c = editorReadKey();
+  int c = editorReadKey();
   switch (c) {
   case CTRL_KEY('q'):
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
     exit(0);
+    break;
+  case PAGE_UP:
+  case PAGE_DOWN: {
+    int times = E.screenrows;
+    while (times--) {
+      editorMoveCursor(c == PAGE_UP ? MOVE_UP : MOVE_DOWN);
+    }
+  } break;
+  case MOVE_UP:
+  case MOVE_DOWN:
+  case MOVE_LEFT:
+  case MOVE_RIGHT:
+    editorMoveCursor(c);
     break;
   }
 }
@@ -178,10 +275,31 @@ void editorDrawRows(struct abuf *ab) {
    */
   int y;
   for (y = 0; y < E.screenrows; y++) {
-    abAppend(ab, "~", 1);
+    if (y == E.screenrows / 3) {
+      char welcome[80];
+      int welcomelen = snprintf(welcome, sizeof(welcome),
+                                "txt editor --- version %s", TXT_VERSION);
+      if (welcomelen > E.screencols) {
+        welcomelen = E.screencols;
+      }
 
+      int padding = (E.screencols - welcomelen) / 2;
+      if (padding) {
+        abAppend(ab, "~", 1);
+        padding--;
+      }
+      while (padding--) {
+        abAppend(ab, " ", 1);
+      }
+
+      abAppend(ab, welcome, welcomelen);
+    } else {
+      abAppend(ab, "~", 1);
+    }
+
+    abAppend(ab, "\x1b[K", 3);
     if (y < E.screenrows - 1) {
-      abAppend(ab, "\r\n", 2); 
+      abAppend(ab, "\r\n", 2);
     }
   }
 }
@@ -191,11 +309,18 @@ void editorRefreshScreen() {
    * the tilde rows and moves the cursor back to the top.
    */
   struct abuf ab = ABUF_INIT;
-  abAppend(&ab, "\x1b[2J", 4);
+
+  abAppend(&ab, "\x1b[?25l", 6);
   abAppend(&ab, "\x1b[H", 3);
+
   editorDrawRows(&ab);
-  abAppend(&ab, "\x1b[H", 3);
-  
+
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  abAppend(&ab, buf, strlen(buf));
+
+  abAppend(&ab, "\x1b[?25h", 6);
+
   write(STDOUT_FILENO, ab.b, ab.len);
   abFree(&ab);
 }
@@ -206,8 +331,11 @@ void initEditor() {
   /* Initializes the editor by getting the size of the terminal window and
    * storing it in the editorConfig struct.
    */
-  if (getWindowSize(&E.screenrows, &E.screencols) == -1)
+  E.cx = 0;
+  E.cy = 0;
+  if (getWindowSize(&E.screenrows, &E.screencols) == -1) {
     die("getWindowSize");
+  }
 }
 
 int main() {
